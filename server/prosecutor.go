@@ -1,13 +1,14 @@
-package prose
+package server
 
 import (
 	"errors"
 	"sync"
 	"time"
 
-	elector "DMS-Elector/client"
-	"DMS-Prosecutor-go/version"
-	radar "Radar-client-mini/client"
+	elector "github.com/moooofly/dms-prosecutor/elector_client"
+	"github.com/moooofly/dms-prosecutor/pkg/parser"
+
+	radar "github.com/moooofly/radar-go-client"
 
 	"github.com/sirupsen/logrus"
 )
@@ -33,8 +34,11 @@ func (s serviceStatus) String() string {
 }
 
 type serviceInfo struct {
-	upThreshold, downThreshold time.Duration
-	lastUpSeen, lastDownSeen   time.Time
+	upThreshold   time.Duration
+	downThreshold time.Duration
+
+	lastUpSeen   time.Time
+	lastDownSeen time.Time
 
 	s serviceStatus
 
@@ -94,9 +98,9 @@ func (si *serviceInfo) reset() {
 
 // Prosecutor defines the prosecutor
 type Prosecutor struct {
-	radarHost   string // radar server host
-	electorHost string // elector request server host
-	electorPath string // elector request server unix domain socket path
+	radarHost  string // radar server tcp host
+	rsTcpHost  string // role service tcp host
+	rsUnixHost string // role service unix host
 
 	checkPeriod     uint
 	reconnectPeriod uint
@@ -112,18 +116,22 @@ type Prosecutor struct {
 
 	reconnectC chan struct{}
 	stopC      chan struct{}
-
-	logger *logrus.Logger
 }
 
 // NewProsecutor returns a prosecutor instance
-func NewProsecutor(radarHost, electorHost, electorPath, domainMoid, machineRoomMoid, groupMoid string, checkPeriod,
-	reconnectPeriod, serviceUpThreshold, serviceDownThreshold uint, mode string, leaderChecklists,
-	followerChecklists map[string]string, logger *logrus.Logger) Prosecutor {
-	var p Prosecutor
+func NewProsecutor() *Prosecutor {
 
-	p = Prosecutor{radarHost: radarHost, electorHost: electorHost, electorPath: electorPath, checkPeriod: checkPeriod,
-		reconnectPeriod: reconnectPeriod, mode: mode}
+	p := &Prosecutor{
+		radarHost: parser.ProsecutorSetting.RadarHost,
+
+		rsTcpHost:  parser.ProsecutorSetting.ElectorRoleServiceTcpHost,
+		rsUnixHost: parser.ProsecutorSetting.ElectorRoleServiceUnixHost,
+
+		checkPeriod:     parser.ProsecutorSetting.CheckPeriod,
+		reconnectPeriod: parser.ProsecutorSetting.ReconnectPeriod,
+
+		mode: parser.ProsecutorSetting.Mode,
+	}
 
 	p.allAppStatus = map[string]*serviceInfo{}
 	p.checklist = map[elector.Role][]string{}
@@ -131,30 +139,127 @@ func NewProsecutor(radarHost, electorHost, electorPath, domainMoid, machineRoomM
 
 	// NOTE: fd, 20190110
 	// there will be some redundant init work, but it is not a big deal, just ignore them
-	upTD, downTD := time.Duration(serviceUpThreshold)*time.Second, time.Duration(serviceDownThreshold)*time.Second
-	for k, v := range leaderChecklists {
-		p.allAppStatus[k] = &serviceInfo{upThreshold: upTD, downThreshold: downTD}
-		p.checklist[elector.RoleLeader] = append(p.checklist[elector.RoleLeader], k)
+	srvUpThres := time.Duration(parser.ProsecutorSetting.ServiceUpThreshold) * time.Second
+	srvDownThres := time.Duration(parser.ProsecutorSetting.ServiceDownThreshold) * time.Second
 
-		a := radar.AppStatusArgs{DomainMoid: domainMoid, ResourceMoid: machineRoomMoid,
-			GroupMoid: groupMoid, ServerMoid: v, ServerName: k}
+	for name, moid := range parser.LeaderChecklistSetting.List {
+		p.allAppStatus[name] = &serviceInfo{
+			upThreshold:   srvUpThres,
+			downThreshold: srvDownThres,
+		}
+		p.checklist[elector.RoleLeader] = append(p.checklist[elector.RoleLeader], name)
+
+		a := radar.AppStatusArgs{
+			DomainMoid:   parser.ProsecutorSetting.DomainMoid,
+			ResourceMoid: parser.ProsecutorSetting.MachineRoomMoid,
+			GroupMoid:    parser.ProsecutorSetting.GroupMoid,
+			ServerName:   name,
+			ServerMoid:   moid,
+		}
 		p.watchAppStatusArgs[a] = true
 	}
-	for k, v := range followerChecklists {
-		p.allAppStatus[k] = &serviceInfo{upThreshold: upTD, downThreshold: downTD}
-		p.checklist[elector.RoleFollower] = append(p.checklist[elector.RoleFollower], k)
 
-		a := radar.AppStatusArgs{DomainMoid: domainMoid, ResourceMoid: machineRoomMoid,
-			GroupMoid: groupMoid, ServerMoid: v, ServerName: k}
+	for name, moid := range parser.FollowerChecklistSetting.List {
+		p.allAppStatus[name] = &serviceInfo{
+			upThreshold:   srvUpThres,
+			downThreshold: srvDownThres,
+		}
+		p.checklist[elector.RoleFollower] = append(p.checklist[elector.RoleFollower], name)
+
+		a := radar.AppStatusArgs{
+			DomainMoid:   parser.ProsecutorSetting.DomainMoid,
+			ResourceMoid: parser.ProsecutorSetting.MachineRoomMoid,
+			GroupMoid:    parser.ProsecutorSetting.GroupMoid,
+			ServerName:   name,
+			ServerMoid:   moid,
+		}
 		p.watchAppStatusArgs[a] = true
 	}
 
 	p.stopC = make(chan struct{})
 	p.reconnectC = make(chan struct{})
 
-	p.logger = logger
-
 	return p
+}
+
+// Start the prosecutor
+func (p *Prosecutor) Start() error {
+	var curRole, prevRole elector.Role
+
+	var ticker = time.NewTicker(time.Duration(p.checkPeriod) * time.Second)
+
+	p.connectRadarServerTillSucceed()
+	p.connectEleServerTillSucceed()
+
+	go p.watcherD()
+
+	for range ticker.C {
+		select {
+		case <-p.stopC:
+			return nil
+
+		default:
+
+			role, err := p.eleCli.Role()
+			if err != nil {
+				logrus.Warnf("[prosecutor] request elector role failed: %v", err)
+				p.connectEleServerTillSucceed()
+				continue
+			}
+
+			prevRole, curRole = curRole, role
+			logrus.Infof("[prosecutor] elector current: [%s], last check: [%s]", curRole, prevRole)
+
+			if (curRole != elector.RoleLeader) && (curRole != elector.RoleFollower) {
+				continue
+			}
+
+			if curRole == elector.RoleLeader && curRole != prevRole {
+				// NOTE: fd, 20180717
+				// every time the elector become the leader, reset the checklist's
+				// to give it a chance to not to abdicate too early, cause it may need a long time
+				// to start up services in the new leader side
+				logrus.Infof("[prosecutor] become a leader! will clear service counter")
+				for _, v := range p.allAppStatus {
+					v.reset()
+				}
+			}
+
+			if p.checkAllServiceStatus(curRole) {
+				switch p.mode {
+				case "single-point":
+					logrus.Infof("[prosecutor] nothing to do in single point mode")
+
+				case "master-slave":
+					logrus.Infof("[prosecutor] service failed, telling elector to abdicate")
+					ok, err := p.eleCli.Abdicate()
+					if err != nil {
+						logrus.Warnf("[prosecutor] abdicate failed: %v", err)
+						p.connectEleServerTillSucceed()
+						continue
+					}
+					if !ok {
+						logrus.Infof("[prosecutor] abdication has been rejected")
+					}
+
+				case "cluster":
+					logrus.Errorf("[prosecutor] cluster handler unfinished")
+
+				default:
+					logrus.Errorf("[prosecutor] wrong mode: %s", p.mode)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// Stop the prosecutor
+func (p *Prosecutor) Stop() {
+	close(p.stopC)
+	p.disconnectEleServer()
+	p.disconnectRadarServer()
 }
 
 func (p *Prosecutor) connectRadarServerTillSucceed() error {
@@ -168,21 +273,24 @@ func (p *Prosecutor) connectRadarServerTillSucceed() error {
 		p.radarCli = nil
 	}
 
+	// loop again every dialtimeout + reconnectPeriod
 	for {
 		select {
 		case <-p.stopC:
 			return errors.New("stopped")
 
 		default:
-			p.logger.Infof("[prosecutor] try to connect radar server...")
+			logrus.Infof("[prosecutor] --> try to connect radar server[%s]", p.radarHost)
 
-			c := radar.NewRadarClient(p.radarHost, p.logger)
+			c := radar.NewRadarClient(p.radarHost, logrus.StandardLogger())
+
+			// NOTE: block + timeout
 			err := c.Connect()
 			if err != nil {
-				p.logger.Errorf("[prosecutor] try to connect radar server failed: %v", err)
+				logrus.Warnf("[prosecutor] connect failed, reason: %v", err)
 			} else {
 				p.radarCli = c
-				p.logger.Infof("[prosecutor] radar server connected!")
+				logrus.Infof("[prosecutor] connect success")
 				return nil
 			}
 		}
@@ -201,7 +309,7 @@ func (p *Prosecutor) reconnectRadarServerD(f func()) {
 			if err := p.connectRadarServerTillSucceed(); err == nil {
 				f()
 			} else {
-				p.logger.Errorf("[prosecutor] reconnectRadarServerD err: %v", err)
+				logrus.Errorf("[prosecutor] reconnectRadarServerD err: %v", err)
 			}
 		}
 	}
@@ -210,10 +318,10 @@ func (p *Prosecutor) reconnectRadarServerD(f func()) {
 func (p *Prosecutor) reconnectRadarServer() {
 	select {
 	case p.reconnectC <- struct{}{}:
-		p.logger.Infof("[prosecutor] trigger reconnection...")
+		logrus.Infof("[prosecutor] trigger reconnection...")
 
 	default:
-		p.logger.Infof("[prosecutor] reconnection process is ongoing...")
+		logrus.Infof("[prosecutor] reconnection process is ongoing...")
 	}
 }
 
@@ -230,11 +338,11 @@ func (p *Prosecutor) connectEleServerTillSucceed() {
 			return
 
 		default:
-			p.logger.Infof("[prosecutor] try to connect elector server...")
-			c := elector.NewClient(p.electorHost, p.electorPath, 30)
+			logrus.Infof("[prosecutor] try to connect elector server...")
+			c := elector.NewClient(p.rsTcpHost, p.rsUnixHost, 30)
 			if err := c.Connect(); err == nil {
 				p.eleCli = c
-				p.logger.Infof("[prosecutor] elector server connected!")
+				logrus.Infof("[prosecutor] elector server connected!")
 				return
 			}
 		}
@@ -254,11 +362,11 @@ func (p *Prosecutor) updateServiceStatus(service string, status radar.AppStatus)
 
 	if status == radar.AppStatusRunning {
 		s.upSeen()
-		p.logger.Infof("[prosecutor] service: %s, up detected! last up seen: %s", service,
+		logrus.Infof("[prosecutor] service: %s, up detected! last up seen: %s", service,
 			s.lastUpSeen.Format(time.RFC3339))
 	} else {
 		s.downSeen()
-		p.logger.Infof("[prosecutor] service: %s, down detected! last down seen: %s", service,
+		logrus.Infof("[prosecutor] service: %s, down detected! last down seen: %s", service,
 			s.lastDownSeen.Format(time.RFC3339))
 	}
 
@@ -293,7 +401,7 @@ func (p *Prosecutor) checkAllServiceStatus(role elector.Role) bool {
 		serviceStatusDown:      {},
 	}
 
-	p.logger.Debugf("[prosecutor] radar server connected? %v", p.radarCli != nil && p.radarCli.Connected())
+	logrus.Debugf("[prosecutor] radar server connected? %v", p.radarCli != nil && p.radarCli.Connected())
 
 	for _, app := range p.checklist[role] {
 		si := p.allAppStatus[app]
@@ -310,14 +418,14 @@ func (p *Prosecutor) checkAllServiceStatus(role elector.Role) bool {
 			last = si.lastUpSeen.Format(time.RFC3339)
 			secs = int(time.Since(si.lastUpSeen).Seconds())
 		}
-		p.logger.Infof("[prosecutor] %s, %s, since %s, for %d secs", app, s.String(), last, secs)
+		logrus.Infof("[prosecutor] %s, %s, since %s, for %d secs", app, s.String(), last, secs)
 	}
 
 	if len(status[serviceStatusDown]) > 0 {
 		down = true
-		p.logger.Warnf("[prosecutor] services down list: %v", status[serviceStatusDown])
+		logrus.Warnf("[prosecutor] services down list: %v", status[serviceStatusDown])
 	} else {
-		p.logger.Infof("[prosecutor] services all good")
+		logrus.Infof("[prosecutor] services all good")
 	}
 
 	return down
@@ -337,10 +445,10 @@ func (p *Prosecutor) watcherD() {
 		// reset all the ass watchers
 		select {
 		case beginC <- struct{}{}:
-			p.logger.Infof("[prosecutor] reconnect finished, will restart...")
+			logrus.Infof("[prosecutor] reconnect finished, will restart...")
 
 		default:
-			p.logger.Infof("[prosecutor] is already began...")
+			logrus.Infof("[prosecutor] is already began...")
 		}
 	})
 
@@ -374,7 +482,7 @@ loop:
 		for k := range p.watchAppStatusArgs {
 			var args = k // do not refactor this line!!!
 
-			p.logger.Debugf("[prosecutor] going to set watcher at %v", args)
+			logrus.Debugf("[prosecutor] going to set watcher at %v", args)
 
 			err := p.radarCli.WatchAppStatus(args, func(rpl radar.AppStatusEventReply, err error) {
 				if err != nil {
@@ -384,30 +492,30 @@ loop:
 					p.updateServiceStatus(args.ServerName, radar.AppStatusFailed)
 
 					if err == radar.ErrRadarServerLost {
-						p.logger.Debugf("[prosecutor] should reconnect, triggered by watch callback")
+						logrus.Debugf("[prosecutor] should reconnect, triggered by watch callback")
 						p.reconnectRadarServer()
 					}
-					p.logger.Errorf("[prosecutor] error of watcher: %v, w/ args: %v", err, args)
+					logrus.Errorf("[prosecutor] error of watcher: %v, w/ args: %v", err, args)
 					return
 				}
 
-				p.logger.Infof("[prosecutor] watcher event got: %v, w/ args: %v", rpl, args)
-				p.logger.Infof("[prosecutor] will confirm current app status...")
+				logrus.Infof("[prosecutor] watcher event got: %v, w/ args: %v", rpl, args)
+				logrus.Infof("[prosecutor] will confirm current app status...")
 
 				rplp, errp := p.radarCli.GetAppStatus([]radar.AppStatusArgs{args})
 				if errp != nil {
-					p.logger.Errorf("[prosecutor] GetAppStatus failed: %v", err)
+					logrus.Errorf("[prosecutor] GetAppStatus failed: %v", err)
 					return
 				}
 				if len(rplp) != 1 {
-					p.logger.Warnf("[prosecutor] GetAppStatus reply len() failed: %v", rplp)
+					logrus.Warnf("[prosecutor] GetAppStatus reply len() failed: %v", rplp)
 					return
 				}
 				p.updateServiceStatus(args.ServerName, rplp[0].Status)
 			})
 
 			if err != nil {
-				p.logger.Errorf("[prosecutor] watch failed: %v, will retry...", err)
+				logrus.Errorf("[prosecutor] watch failed: %v, will retry...", err)
 				p.updateServiceStatus(args.ServerName, radar.AppStatusFailed)
 
 				time.Sleep(time.Second)
@@ -419,10 +527,10 @@ loop:
 		// step 2.
 		if err := p.getAllServicesStatus(args); err != nil {
 			if err == radar.ErrRadarServerLost {
-				p.logger.Errorf("[prosecutor] cannot connect radar server, will retry...")
+				logrus.Errorf("[prosecutor] cannot connect radar server, will retry...")
 				p.reconnectRadarServer()
 			} else {
-				p.logger.Errorf("[prosecutor] updateAllServicesStatus failed, will retry...")
+				logrus.Errorf("[prosecutor] updateAllServicesStatus failed, will retry...")
 			}
 
 			time.Sleep(time.Second)
@@ -431,83 +539,4 @@ loop:
 
 		goto loop
 	}
-}
-
-// Start the prosecutor
-func (p *Prosecutor) Start() {
-	p.logger.Infof("====================== PROSECUTOR =======================")
-	p.logger.Infof("[prosecutor] starting prosecutor, version %s %s", version.Version, version.Revision)
-	p.logger.Infof("[prosecutor] w/ radar-cli version %s %s", radar.VERSION, radar.DATE)
-
-	var curRole, prevRole elector.Role
-	var ticker = time.NewTicker(time.Duration(p.checkPeriod) * time.Second)
-
-	p.connectRadarServerTillSucceed()
-	p.connectEleServerTillSucceed()
-	go p.watcherD()
-
-	for range ticker.C {
-		select {
-		case <-p.stopC:
-			return
-
-		default:
-			role, err := p.eleCli.Role()
-			if err != nil {
-				p.logger.Warnf("[prosecutor] request elector role failed: %v", err)
-				p.connectEleServerTillSucceed()
-				continue
-			}
-
-			prevRole, curRole = curRole, role
-			p.logger.Infof("[prosecutor] elector current: [%s], last check: [%s]", curRole, prevRole)
-
-			if (curRole != elector.RoleLeader) && (curRole != elector.RoleFollower) {
-				continue
-			}
-
-			if curRole == elector.RoleLeader && curRole != prevRole {
-				// NOTE: fd, 20180717
-				// every time the elector become the leader, reset the checklist's
-				// to give it a chance to not to abdicate too early, cause it may need a long time
-				// to start up services in the new leader side
-				p.logger.Infof("[prosecutor] become a leader! will clear service counter")
-				for _, v := range p.allAppStatus {
-					v.reset()
-				}
-			}
-
-			if p.checkAllServiceStatus(curRole) {
-				switch p.mode {
-				case "single-point":
-					p.logger.Infof("[prosecutor] nothing to do in single point mode")
-
-				case "master-slave":
-					p.logger.Infof("[prosecutor] service failed, telling elector to abdicate")
-					ok, err := p.eleCli.Abdicate()
-					if err != nil {
-						p.logger.Warnf("[prosecutor] abdicate failed: %v", err)
-						p.connectEleServerTillSucceed()
-						continue
-					}
-					if !ok {
-						p.logger.Infof("[prosecutor] abdication has been rejected")
-					}
-
-				case "cluster":
-					p.logger.Errorf("[prosecutor] cluster handler unfinished")
-
-				default:
-					p.logger.Errorf("[prosecutor] wrong mode: %s", p.mode)
-				}
-			}
-		}
-	}
-}
-
-// Stop the prosecutor
-func (p *Prosecutor) Stop() {
-	close(p.stopC)
-	p.disconnectEleServer()
-	p.disconnectRadarServer()
 }

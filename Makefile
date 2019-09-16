@@ -1,22 +1,88 @@
-PKG=DMS-Prosecutor-go
+GOPATH ?= $(shell go env GOPATH)
 
-# Used to populate variables in version package.
-VERSION=$(shell git describe --match 'v[0-9]*' --dirty='.m' --always)
-REVISION=$(shell git rev-parse HEAD)$(shell if ! git diff --no-ext-diff --quiet --exit-code; then echo .m; fi)
+# Ensure GOPATH is set before running build process.
+ifeq "$(GOPATH)" ""
+  $(error Please set the environment variable GOPATH before running `make`)
+endif
 
-GOCMD=go
-GOCLEAN=$(GOCMD) clean
-GO_LDFLAGS=-ldflags '-s -w -X $(PKG)/version.Version=$(VERSION) -X $(PKG)/version.Revision=$(REVISION)'
+GOOS       := $(shell go env GOOS)
+GOARCH     := $(shell go env GOARCH)
+PKGS       := $(shell go list ./... | grep -v vendor)
 
 
-BINARY_NAME=prosecutor
-SRC_FILE=./main.go
+# NOTE: '-race' requires cgo; enable cgo by setting CGO_ENABLED=1
+#BUILD_FLAG := -race
+GOBUILD    := CGO_ENABLED=0 GOOS=${GOOS} GOARCH=${GOARCH} go build $(BUILD_FLAG)
 
-all: build
+LDFLAGS += -X "github.com/moooofly/dms-prosecutor/pkg/version.ClientVersion=$(shell cat VERSION)"
+LDFLAGS += -X "github.com/moooofly/dms-prosecutor/pkg/version.GoVersion=$(shell go version)"
+LDFLAGS += -X "github.com/moooofly/dms-prosecutor/pkg/version.UTCBuildTime=$(shell date -u '+%Y-%m-%d %I:%M:%S')"
+LDFLAGS += -X "github.com/moooofly/dms-prosecutor/pkg/version.GitBranch=$(shell git rev-parse --abbrev-ref HEAD)"
+LDFLAGS += -X "github.com/moooofly/dms-prosecutor/pkg/version.GitTag=$(shell git describe --tags)"
+LDFLAGS += -X "github.com/moooofly/dms-prosecutor/pkg/version.GitHash=$(shell git rev-parse HEAD)"
+
+BINARY := prosecutor
+
+.PHONY: all build install lint test pack docker misspell shellcheck clean
+
+all: lint build test
 
 build:
-	$(GOCMD) build $(GO_LDFLAGS) -o $(BINARY_NAME) $(SRC_FILE)
+	@echo "==> Building ..."
+	$(GOBUILD) -o $(BINARY) -ldflags '$(LDFLAGS)' .
+	@echo ""
+
+install:
+	@echo "==> Installing ..."
+	go install -ldflags '$(LDFLAGS)' .
+	@echo ""
+
+lint:
+	@# gometalinter - Concurrently run Go lint tools and normalise their output
+	@# - go get -u github.com/alecthomas/gometalinter  (Install from HEAD)
+	@# - gometalinter --install  (Install all known linters)
+	@echo "==> Running gometalinter ..."
+	gometalinter --exclude=vendor --disable-all --enable=golint --enable=vet --enable=gofmt --enable=misspell
+	find . -name '*.go' -not -path "./vendor/*" | xargs gofmt -w -s
+	@echo ""
+
+test:
+	@echo "==> Testing ..."
+	go test -short -race $(PKGS)
+	@echo ""
+
+deps:
+	@echo "===> Tidy Dependencies ..."
+	go mod tidy && go mod vendor
+	@echo ""
+
+build_linux:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(BUILD_FLAG) -o $(BINARY)_linux_amd64 -ldflags '$(LDFLAGS)' .
+
+build_darwin:
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(BUILD_FLAG) -o $(BINARY)_darwin_amd64 -ldflags '$(LDFLAGS)' .
+
+pack: build_linux build_darwin
+	@echo "==> Packing ..."
+	@tar czvf $(BINARY)-$(shell cat VERSION).linux-amd64.tar.gz $(BINARY)_linux_amd64 conf/*.conf
+	@echo ""
+	@tar czvf $(BINARY)-$(shell cat VERSION).darwin-amd64.tar.gz $(BINARY)_darwin_amd64 conf/*.conf
+	@echo ""
+	@rm $(BINARY)_linux_amd64
+	@rm $(BINARY)_darwin_amd64
+
+misspell:
+	@# misspell - Correct commonly misspelled English words in source files
+	@#    go get -u github.com/client9/misspell/cmd/misspell
+	@echo "==> Runnig misspell ..."
+	find . -name '*.go' -not -path './vendor/*' -not -path './_repos/*' | xargs misspell -error
+	@echo ""
 
 clean:
-	$(GOCLEAN)
-	rm -f $(BINARY_NAME)
+	@echo "==> Cleaning ..."
+	go clean -x -i .
+	rm -f $(BINARY) $(BINARY)_*
+	rm -rf *.out
+	rm -rf *.tar.gz
+	@echo ""
+
