@@ -1,1 +1,3 @@
 prosecutor
+
+proto/*.pb.go
