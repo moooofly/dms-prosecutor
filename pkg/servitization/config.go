@@ -47,19 +47,19 @@ func Init() (err error) {
 	prof = app.Flag("prof", "generate all kinds of profile into files").Default("false").Bool()
 	daemon := app.Flag("daemon", "run prosecutor in background").Default("false").Bool()
 	forever := app.Flag("forever", "run prosecutor in forever, fail and retry").Default("false").Bool()
-	logfile := app.Flag("log", "log file path").Default("").String()
+	logfile := app.Flag("log-file", "log file, e.g. '/opt/log/dms/prosecutor.log'").Default("").String()
+	confPath := app.Flag("conf-path", "config file path, e.g. '/opt/config/dms'").Default("conf").String()
 	nolog := app.Flag("nolog", "turn off logging").Default("false").Bool()
 
 	_ = kingpin.MustParse(app.Parse(os.Args[1:]))
 
 	// ini 配置解析
-	parser.Load()
+	parser.Load(*confPath)
 
 	// log setting
 	if *dbg {
 		Output = os.Stdout
 		logrus.SetOutput(Output)
-		//logrus.SetLevel(logrus.DebugLevel)
 
 		if *level != "" {
 			switch *level {
@@ -90,8 +90,8 @@ func Init() (err error) {
 			}
 			Output = f
 			logrus.SetOutput(Output)
-		} else if parser.ProsecutorSetting.LogPath != "" {
-			f, err := os.OpenFile(parser.ProsecutorSetting.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		} else if parser.ProsecutorSetting.LogFile != "" {
+			f, err := os.OpenFile(parser.ProsecutorSetting.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 			if err != nil {
 				logrus.Fatal(err)
 			}
