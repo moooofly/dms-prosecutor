@@ -1,3 +1,4 @@
 prosecutor
 
+*.prof
 proto/*.pb.go
