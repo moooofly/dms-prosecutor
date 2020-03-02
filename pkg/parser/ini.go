@@ -1,6 +1,8 @@
 package parser
 
 import (
+	"fmt"
+
 	"github.com/sirupsen/logrus"
 	"gopkg.in/ini.v1"
 )
@@ -25,7 +27,7 @@ type prosecutor struct {
 	ElectorRoleServiceTcpHost  string `ini:"elector-role-service-host"`
 	ElectorRoleServiceUnixHost string `ini:"elector-role-service-path"`
 
-	LogPath  string `ini:"log-path"`
+	LogFile  string `ini:"log-file"`
 	LogLevel string `ini:"log-level"`
 
 	DomainMoid      string `ini:"domain-moid"`
@@ -51,12 +53,13 @@ type followerChecklist struct {
 	List map[string]string
 }
 
-func Load() {
-	// TODO: 路径问题
+func Load(confPath string) {
+	cf := fmt.Sprintf("%s/prosecutor.ini", confPath)
+
 	var err error
-	cfg, err = ini.Load("conf/prosecutor.ini")
+	cfg, err = ini.Load(cf)
 	if err != nil {
-		logrus.Fatalf("Fail to parse 'conf/prosecutor.ini': %v", err)
+		logrus.Fatalf("Fail to parse '%s': %v", cf, err)
 	}
 
 	mapTo("prosecutor", ProsecutorSetting)

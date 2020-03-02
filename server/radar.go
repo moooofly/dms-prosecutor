@@ -132,7 +132,7 @@ func (si *serviceInfo) reset() {
 }
 
 // get all services s from radar server
-func (p *Prosecutor) getAllServicesStatus(args []radar.AppStatusArgs) error {
+func (p *Prosecutor) getAllServicesStatus(args []radar.ReqArgs) error {
 	if p.radarCli == nil {
 		return radar.ErrRadarServerLost
 	}
@@ -172,7 +172,7 @@ func (p *Prosecutor) radarLoop() {
 	go p.backgroundConnectRadar()
 	p.radarReconnectTrigger()
 
-	var args []radar.AppStatusArgs
+	var args []radar.ReqArgs
 	for k := range p.watchAppStatusArgs { // reuse watch args
 		args = append(args, k)
 	}
@@ -208,7 +208,7 @@ loop:
 
 			logrus.Debugf("[prosecutor] set watcher on => %v", args)
 
-			err := p.radarCli.WatchAppStatus(args, func(rpl radar.AppStatusEventReply, err error) {
+			err := p.radarCli.WatchAppStatus(args, func(rpl radar.EventRsp, err error) {
 				if err != nil {
 					// NOTE: fd, 20190111
 					// if we get any error after watching
@@ -226,9 +226,9 @@ loop:
 				logrus.Infof("[prosecutor] watcher event got: %v, w/ args: %v", rpl, args)
 				logrus.Infof("[prosecutor] will confirm current app status...")
 
-				rplp, errp := p.radarCli.GetAppStatus([]radar.AppStatusArgs{args})
+				rplp, errp := p.radarCli.GetAppStatus([]radar.ReqArgs{args})
 				if errp != nil {
-					logrus.Errorf("[prosecutor] GetAppStatus failed: %v", err)
+					logrus.Errorf("[prosecutor] GetAppStatus failed: %v", errp)
 					return
 				}
 				if len(rplp) != 1 {
@@ -312,6 +312,6 @@ func (p *Prosecutor) radarReconnectTrigger() {
 
 func (p *Prosecutor) disconnectRadar() {
 	if p.radarCli != nil {
-		p.radarCli.Close()
+		p.radarCli.Disconnect()
 	}
 }
