@@ -23,8 +23,8 @@ type Prosecutor struct {
 	mode string
 
 	allAppStatus       map[string]*serviceInfo
-	checklist          map[pb.EnumRole][]string     // checklist on diff role
-	watchAppStatusArgs map[radar.AppStatusArgs]bool // just use map as set
+	checklist          map[pb.EnumRole][]string // checklist on diff role
+	watchAppStatusArgs map[radar.ReqArgs]bool   // just use map as set
 
 	rsClientConn *grpc.ClientConn // connection to remote elector
 	rsClient     pb.RoleServiceClient
@@ -57,7 +57,7 @@ func NewProsecutor() *Prosecutor {
 
 	p.allAppStatus = map[string]*serviceInfo{}
 	p.checklist = map[pb.EnumRole][]string{}
-	p.watchAppStatusArgs = map[radar.AppStatusArgs]bool{}
+	p.watchAppStatusArgs = map[radar.ReqArgs]bool{}
 
 	srvUpThres := time.Duration(parser.ProsecutorSetting.ServiceUpThreshold) * time.Second
 	srvDownThres := time.Duration(parser.ProsecutorSetting.ServiceDownThreshold) * time.Second
@@ -69,7 +69,7 @@ func NewProsecutor() *Prosecutor {
 		}
 		p.checklist[pb.EnumRole_Leader] = append(p.checklist[pb.EnumRole_Leader], name)
 
-		a := radar.AppStatusArgs{
+		a := radar.ReqArgs{
 			DomainMoid:   parser.ProsecutorSetting.DomainMoid,
 			ResourceMoid: parser.ProsecutorSetting.MachineRoomMoid,
 			GroupMoid:    parser.ProsecutorSetting.GroupMoid,
@@ -86,7 +86,7 @@ func NewProsecutor() *Prosecutor {
 		}
 		p.checklist[pb.EnumRole_Follower] = append(p.checklist[pb.EnumRole_Follower], name)
 
-		a := radar.AppStatusArgs{
+		a := radar.ReqArgs{
 			DomainMoid:   parser.ProsecutorSetting.DomainMoid,
 			ResourceMoid: parser.ProsecutorSetting.MachineRoomMoid,
 			GroupMoid:    parser.ProsecutorSetting.GroupMoid,
