@@ -54,10 +54,12 @@ type followerChecklist struct {
 }
 
 func Load(confPath string) {
+	cf := fmt.Sprintf("%s/prosecutor.ini", confPath)
+
 	var err error
-	cfg, err = ini.Load(fmt.Sprintf("%s/prosecutor.ini", confPath))
+	cfg, err = ini.Load(cf)
 	if err != nil {
-		logrus.Fatalf("Fail to parse 'conf/prosecutor.ini': %v", err)
+		logrus.Fatalf("Fail to parse '%s': %v", cf, err)
 	}
 
 	mapTo("prosecutor", ProsecutorSetting)
