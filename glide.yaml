@@ -1,6 +1,7 @@
 package: github.com/moooofly/dms-prosecutor
 import:
 - package: github.com/moooofly/radar-go-client
+  version: ^0.1.0
 - package: github.com/sirupsen/logrus
   version: ^1.5.0
 - package: google.golang.org/grpc
