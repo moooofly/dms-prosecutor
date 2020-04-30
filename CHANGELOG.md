@@ -1,3 +1,12 @@
+## 0.3.0 (2020-04-30)
+
+* feat: add glide vendor ([adb44d3](https://github.com/moooofly/dms-prosecutor/commit/adb44d3))
+* feat: add vendor by go module ([7b407e5](https://github.com/moooofly/dms-prosecutor/commit/7b407e5))
+* feat: remove glide vendor, merge lots of improvements ([1b448d9](https://github.com/moooofly/dms-prosecutor/commit/1b448d9))
+* feat: update glide vendor ([619ab5d](https://github.com/moooofly/dms-prosecutor/commit/619ab5d))
+
+
+
 ## 0.2.0 (2020-03-02)
 
 * improvement: support confPath ([77af33a](https://github.com/moooofly/dms-prosecutor/commit/77af33a))
