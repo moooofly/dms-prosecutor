@@ -47,14 +47,14 @@ func Init() (err error) {
 	prof = app.Flag("prof", "generate all kinds of profile into files").Default("false").Bool()
 	daemon := app.Flag("daemon", "run prosecutor in background").Default("false").Bool()
 	forever := app.Flag("forever", "run prosecutor in forever, fail and retry").Default("false").Bool()
-	logfile := app.Flag("log-file", "log file, e.g. '/opt/log/dms/prosecutor.log'").Default("").String()
-	confPath := app.Flag("conf-path", "config file path, e.g. '/opt/config/dms'").Default("conf").String()
+	logfile := app.Flag("log", "log file, e.g. '/opt/log/dms/prosecutor.log'").Default("").String()
+	confFile := app.Flag("conf", "config file path, e.g. '/opt/config/dms/prosecutor.ini'").Default("conf/prosecutor.ini").String()
 	nolog := app.Flag("nolog", "turn off logging").Default("false").Bool()
 
 	_ = kingpin.MustParse(app.Parse(os.Args[1:]))
 
 	// ini 配置解析
-	parser.Load(*confPath)
+	parser.Load(*confFile)
 
 	// log setting
 	if *dbg {
@@ -199,11 +199,11 @@ func Init() (err error) {
 	}
 
 	if *dbg {
-		logrus.Infof("======================= prosecutor ========================")
+		logrus.Infof("============================= prosecutor ==============================")
 		logrus.Infof("version: %s", version.Version)
-		logrus.Infof("======================= ======= ========================")
+		logrus.Infof("============================= ========== ==============================")
 	} else {
-		logrus.Infof("======================= prosecutor ========================")
+		logrus.Infof("============================= prosecutor ==============================")
 	}
 
 	p = server.NewProsecutor()

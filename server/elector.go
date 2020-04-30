@@ -2,16 +2,19 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	pb "github.com/moooofly/dms-prosecutor/proto"
+
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 )
 
 func (p *Prosecutor) electorLoop() {
-	logrus.Debug("====> enter electorLoop")
-	defer logrus.Debug("====> leave electorLoop")
+	logrus.Debug("[prosecutor] ====> enter electorLoop")
+	defer logrus.Debug("[prosecutor] ====> leave electorLoop")
 
 	go p.backgroundConnectElector()
 	p.electorReconnectTrigger()
@@ -113,19 +116,26 @@ func (p *Prosecutor) backgroundConnectElector() {
 
 		for {
 
-			logrus.Infof("[prosecutor] --> try to connect elector[%s]", p.rsTcpHost)
+			var addr string
+			if strings.Contains(p.rsIp, ":") {
+				addr = fmt.Sprintf("[%s]:%s", p.rsIp, p.rsPort)
+			} else {
+				addr = fmt.Sprintf("%s:%s", p.rsIp, p.rsPort)
+			}
+
+			logrus.Infof("[prosecutor]      --> try to connect elector '%s'", addr)
 
 			conn, err := grpc.Dial(
-				p.rsTcpHost,
+				addr,
 				grpc.WithInsecure(),
 				grpc.WithBlock(),
 				grpc.WithTimeout(time.Second),
 			)
 			// NOTE: block + timeout
 			if err != nil {
-				logrus.Warnf("[prosecutor] connect elector failed, reason: %v", err)
+				logrus.Warnf("[prosecutor]      <-- connect elector failed, %v", err)
 			} else {
-				logrus.Infof("[prosecutor] connect elector success")
+				logrus.Infof("[prosecutor]      <-- connect elector success")
 
 				// NOTE: 顺序不能变
 				p.rsClientConn = conn
@@ -145,9 +155,7 @@ func (p *Prosecutor) backgroundConnectElector() {
 func (p *Prosecutor) electorReconnectTrigger() {
 	select {
 	case p.disconnectedElectorCh <- struct{}{}:
-		logrus.Debugf("[prosecutor] trigger connection to [elector]")
 	default:
-		logrus.Debugf("[prosecutor] connection process is ongoing")
 	}
 }
 

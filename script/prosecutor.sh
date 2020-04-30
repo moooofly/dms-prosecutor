@@ -2,7 +2,7 @@
 
 PROSECUTOR_WORKING_DIR=$(pwd)
 
-PROSECUTOR_BIN_NAME='prosecutor'
+PROSECUTOR_BIN_NAME='dms-prosecutor'
 
 PROSECUTOR_PID_FILE_DIR='/run'
 PROSECUTOR_PID_FILE_NAME='dms-prosecutor.pid'
@@ -29,7 +29,7 @@ start)
         fi
     fi
 
-    ${PROSECUTOR_EXE} ${PROSECUTOR_CFG} &
+    ${PROSECUTOR_EXE} --conf=${PROSECUTOR_CFG} &
 
     if [ $? -eq 0 ]; then
         pid=$!
