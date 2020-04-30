@@ -1,8 +1,6 @@
 package parser
 
 import (
-	"fmt"
-
 	"github.com/sirupsen/logrus"
 	"gopkg.in/ini.v1"
 )
@@ -22,23 +20,26 @@ var (
 
 // [prosecutor] section in .ini
 type prosecutor struct {
-	RadarHost string `ini:"radar-server-host"`
+	RadarIp   string `ini:"radar_ip"`
+	RadarPort string `ini:"radar_port"`
 
-	ElectorRoleServiceTcpHost  string `ini:"elector-role-service-host"`
-	ElectorRoleServiceUnixHost string `ini:"elector-role-service-path"`
+	ElectorRoleServiceIp   string `ini:"elector_ip"`
+	ElectorRoleServicePort string `ini:"elector_port"`
 
-	LogFile  string `ini:"log-file"`
-	LogLevel string `ini:"log-level"`
+	ElectorRoleServiceUnixPath string `ini:"elector_unix_path"`
 
-	DomainMoid      string `ini:"domain-moid"`
-	MachineRoomMoid string `ini:"machine-room-moid"`
-	GroupMoid       string `ini:"group-moid"`
+	LogFile  string `ini:"log_file"`
+	LogLevel string `ini:"log_level"`
 
-	CheckPeriod     uint `ini:"check-period"`
-	ReconnectPeriod uint `ini:"reconnect-period"`
+	DomainMoid      string `ini:"domain_moid"`
+	MachineRoomMoid string `ini:"machine_room_moid"`
+	GroupMoid       string `ini:"group_moid"`
 
-	ServiceUpThreshold   uint `ini:"service-up-threshold"`
-	ServiceDownThreshold uint `ini:"service-down-threshold"`
+	CheckPeriod     uint `ini:"check_period"`
+	ReconnectPeriod uint `ini:"reconnect_period"`
+
+	ServiceUpThreshold   uint `ini:"service_up_threshold"`
+	ServiceDownThreshold uint `ini:"service_down_threshold"`
 
 	Mode string `ini:"mode"`
 }
@@ -53,29 +54,22 @@ type followerChecklist struct {
 	List map[string]string
 }
 
-func Load(confPath string) {
-	cf := fmt.Sprintf("%s/prosecutor.ini", confPath)
-
+func Load(confFile string) {
 	var err error
-	cfg, err = ini.Load(cf)
+	cfg, err = ini.LoadSources(ini.LoadOptions{
+		IgnoreInlineComment: true,
+	}, confFile)
 	if err != nil {
-		logrus.Fatalf("Fail to parse '%s': %v", cf, err)
+		logrus.Fatalf("Fail to parse '%s': %v", confFile, err)
 	}
 
 	mapTo("prosecutor", ProsecutorSetting)
 
 	switch ProsecutorSetting.Mode {
-	case "single-point":
-		logrus.Infof("mode => [%s]", ProsecutorSetting.Mode)
-		//mapTo("single-point", SinglePointSetting)
-	case "master-slave":
-		logrus.Infof("mode => [%s]", ProsecutorSetting.Mode)
-		//mapTo("master-slave", MasterSlaveSetting)
-	case "cluster":
-		logrus.Infof("mode => [%s]", ProsecutorSetting.Mode)
-		//mapTo("cluster", ClusterSetting)
+	case "single-point", "master-slave", "cluster":
+		//logrus.Infof("mode setting => [%s]", ProsecutorSetting.Mode)
 	default:
-		logrus.Fatal("not match any of [single-point|master-slave|cluster].")
+		logrus.Fatalf("mode '%v' dose not match any of [single-point|master-slave|cluster].", ProsecutorSetting.Mode)
 	}
 
 	for _, k := range cfg.Section("leader-checklist").Keys() {

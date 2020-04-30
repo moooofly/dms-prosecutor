@@ -1,10 +1,14 @@
 package server
 
 import (
+	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
+	"unsafe"
 
 	pb "github.com/moooofly/dms-prosecutor/proto"
+
 	radar "github.com/moooofly/radar-go-client"
 	"github.com/sirupsen/logrus"
 )
@@ -37,7 +41,12 @@ func (p *Prosecutor) checkAllServiceStatus(role pb.EnumRole) (ok bool) {
 		serviceStatusDown:      {},
 	}
 
-	logrus.Debugf("[prosecutor] radar server connected? %v", p.radarCli != nil && p.radarCli.Connected())
+	if p.radarCli != nil && p.radarCli.Connected() {
+		logrus.Infof("[prosecutor] radar server connected? true")
+	} else {
+		logrus.Infof("[prosecutor] radar server connected? false           -- trigger reconnect")
+		p.setDisconnectedState(errors.New("trigger by electorLoop"))
+	}
 
 	for _, app := range p.checklist[role] {
 		si := p.allAppStatus[app]
@@ -54,14 +63,14 @@ func (p *Prosecutor) checkAllServiceStatus(role pb.EnumRole) (ok bool) {
 			last = si.lastUpSeen.Format(time.RFC3339)
 			secs = int(time.Since(si.lastUpSeen).Seconds())
 		}
-		logrus.Infof("[prosecutor] %s, %s, since %s, for %d secs", app, s.String(), last, secs)
+		logrus.Infof("[prosecutor] %-15s, %s, since %s, for %d secs", app, s.String(), last, secs)
 	}
 
 	if len(status[serviceStatusDown]) > 0 {
 		logrus.Warnf("[prosecutor] service down list: %v", status[serviceStatusDown])
 		ok = false
 	} else {
-		logrus.Infof("[prosecutor] services all good")
+		//logrus.Infof("[prosecutor] services all good")
 		ok = true
 	}
 
@@ -137,14 +146,25 @@ func (p *Prosecutor) getAllServicesStatus(args []radar.ReqArgs) error {
 		return radar.ErrRadarServerLost
 	}
 
-	rpl, err := p.radarCli.GetAppStatus(args)
+	logrus.Infof("[prosecutor] =====")
+	logrus.Infof("[prosecutor] ===== getAllServicesStatus -> GetAppStatus()")
+	logrus.Infof("[prosecutor] =====")
+	rsp, err := p.radarCli.GetAppStatus(args)
 	if err != nil {
+		logrus.Infof("[prosecutor] =====          -> GetAppStatus() failed, %v", err)
 		return err
 	}
+	for _, r := range rsp {
+		logrus.Infof("[prosecutor] =====  --> %v", r)
+	}
 
-	for _, r := range rpl {
+	logrus.Infof("[prosecutor] =====")
+	logrus.Infof("[prosecutor] ===== getAllServicesStatus -> updateServiceStatus()")
+	logrus.Infof("[prosecutor] =====")
+	for _, r := range rsp {
 		p.updateServiceStatus(r.ServerName, r.Status)
 	}
+	logrus.Infof("[prosecutor] =====")
 
 	return nil
 }
@@ -154,11 +174,11 @@ func (p *Prosecutor) updateServiceStatus(service string, status radar.AppStatus)
 
 	if status == radar.AppStatusRunning {
 		s.upSeen()
-		logrus.Infof("[prosecutor] service [%s], up detected! last up seen: %s", service,
+		logrus.Infof("[prosecutor]    [  %-12s  UP   ] detected! last up seen: %s", service,
 			s.lastUpSeen.Format(time.RFC3339))
 	} else {
 		s.downSeen()
-		logrus.Infof("[prosecutor] service [%s], down detected! last down seen: %s", service,
+		logrus.Infof("[prosecutor]    [  %-12s  DOWN ] detected! last down seen: %s", service,
 			s.lastDownSeen.Format(time.RFC3339))
 	}
 
@@ -166,11 +186,11 @@ func (p *Prosecutor) updateServiceStatus(service string, status radar.AppStatus)
 }
 
 func (p *Prosecutor) radarLoop() {
-	logrus.Debug("====> enter radarLoop")
-	defer logrus.Debug("====> leave radarLoop")
+	logrus.Debug("[prosecutor] ====> enter radarLoop")
+	defer logrus.Debug("[prosecutor] ====> leave radarLoop")
 
 	go p.backgroundConnectRadar()
-	p.radarReconnectTrigger()
+	p.setDisconnectedState(errors.New("bootstrap"))
 
 	var args []radar.ReqArgs
 	for k := range p.watchAppStatusArgs { // reuse watch args
@@ -195,77 +215,130 @@ func (p *Prosecutor) radarLoop() {
 	//			of watcher's callback
 	//
 	// Callback: make sure no matter what kind of event happened, use GetAppStatus() to get the newest status
-loop:
-	select {
-	case <-p.stopCh:
-		return
+	for {
+		select {
+		case <-p.stopCh:
+			return
 
-	case <-p.connectedRadarCh:
+		case <-p.connectedRadarCh:
 
-		// step 1.
-		for k := range p.watchAppStatusArgs {
-			var args = k // do not refactor this line!!!
+			for {
 
-			logrus.Debugf("[prosecutor] set watcher on => %v", args)
+				if !p.connected() {
+					break
+				}
 
-			err := p.radarCli.WatchAppStatus(args, func(rpl radar.EventRsp, err error) {
-				if err != nil {
-					// NOTE: fd, 20190111
-					// if we get any error after watching
-					// mark service as failed
-					p.updateServiceStatus(args.ServerName, radar.AppStatusFailed)
+				var errWatch error
 
-					if err == radar.ErrRadarServerLost {
-						logrus.Debugf("[prosecutor] should reconnect, triggered by watch callback")
-						p.radarReconnectTrigger()
+				// step 1. setup watch
+				for k := range p.watchAppStatusArgs {
+					var args = k // do not refactor this line!!!
+
+					logrus.Debugf("[prosecutor] ##### set watch on -- %s", args.ServerName)
+					logrus.Debugf("[prosecutor] ##### %v", args)
+
+					errWatch = p.radarCli.WatchAppStatus(args, func(rpl radar.EventRsp, err error) {
+						if err != nil {
+							// NOTE: any error after watching, will be marked as service failed
+							p.updateServiceStatus(args.ServerName, radar.AppStatusFailed)
+
+							// NOTE: do not reconnect here, as it will trigger multiple reconnection
+							if err == radar.ErrRadarServerLost {
+								logrus.Debugf("[prosecutor]  --> find radar connection lost in watch callback ")
+							}
+							return
+						}
+
+						//logrus.Infof("[prosecutor]")
+						//logrus.Infof("[prosecutor] ------------------------- WatchAppStatus() callback -------------------------")
+						//logrus.Infof("[prosecutor] watch args  => %v", args)
+						//logrus.Infof("[prosecutor] recv watch event => %v ", rpl)
+						//logrus.Infof("[prosecutor]")
+
+						rsp, errp := p.radarCli.GetAppStatus([]radar.ReqArgs{args})
+						if errp != nil {
+							logrus.Errorf("[prosecutor] +++++ GetAppStatus() in WatchAppStatus() callback failed, %v", errp)
+							return
+						}
+						if len(rsp) != 1 {
+							logrus.Warnf("[prosecutor] +++++ GetAppStatus() in WatchAppStatus() callback failed, (len(rsp) != 1), rsp => %v", rsp)
+							return
+						}
+
+						logrus.Infof("[prosecutor] +++++ GetAppStatus() in WatchAppStatus() callback, rsp => %v", rsp)
+						p.updateServiceStatus(args.ServerName, rsp[0].Status)
+						//logrus.Infof("[prosecutor] ------------------------- ------------------------- -------------------------")
+					})
+
+					// FIXME: 这里的逻辑是，任意一个 watch 失败都会重新 watch 一遍，是否合理？
+					//        如果出现重复 watch 是否会有问题？
+					if errWatch != nil {
+						logrus.Errorf("[prosecutor] ##### watch '%s' failed: %v, will retry", args.ServerName, errWatch)
+						p.updateServiceStatus(args.ServerName, radar.AppStatusFailed)
+
+						break
 					}
-					logrus.Errorf("[prosecutor] error of watcher: %v, w/ args: %v", err, args)
-					return
 				}
 
-				logrus.Infof("[prosecutor] watcher event got: %v, w/ args: %v", rpl, args)
-				logrus.Infof("[prosecutor] will confirm current app status...")
-
-				rplp, errp := p.radarCli.GetAppStatus([]radar.ReqArgs{args})
-				if errp != nil {
-					logrus.Errorf("[prosecutor] GetAppStatus failed: %v", errp)
-					return
+				if errWatch != nil {
+					time.Sleep(1 * time.Second)
+					continue
 				}
-				if len(rplp) != 1 {
-					logrus.Warnf("[prosecutor] GetAppStatus reply len() failed: %v", rplp)
-					return
+
+				// step 2. get and update services status
+				logrus.Debugf("[prosecutor] ##### radarCli -> getAllServicesStatus (GetAppStatus + updateServiceStatus)")
+
+				if err := p.getAllServicesStatus(args); err != nil {
+					if err == radar.ErrRadarServerLost {
+						logrus.Errorf("[prosecutor] getAllServicesStatus() failed, '%v' -- reconnect", err)
+						p.setDisconnectedState(err)
+					} else {
+						logrus.Errorf("[prosecutor] getAllServicesStatus() failed, '%v'", err)
+					}
 				}
-				p.updateServiceStatus(args.ServerName, rplp[0].Status)
-			})
 
-			if err != nil {
-				logrus.Errorf("[prosecutor] watch failed: %v, will retry...", err)
-				p.updateServiceStatus(args.ServerName, radar.AppStatusFailed)
-
-				// FIXME: 为啥要休息？
-				time.Sleep(time.Second)
-
-				// FIXME: 为啥 err 了就要回 loop 起始位置重来？
-				go func() { p.connectedRadarCh <- struct{}{} }()
-				goto loop
+				break
 			}
 		}
-
-		// step 2.
-		if err := p.getAllServicesStatus(args); err != nil {
-			if err == radar.ErrRadarServerLost {
-				logrus.Errorf("[prosecutor] cannot connect radar server, will retry...")
-				p.radarReconnectTrigger()
-			} else {
-				logrus.Errorf("[prosecutor] updateAllServicesStatus failed, will retry...")
-			}
-
-			time.Sleep(time.Second)
-			go func() { p.connectedRadarCh <- struct{}{} }()
-		}
-
-		goto loop
 	}
+}
+
+func (p *Prosecutor) lastConnectError() error {
+	errPtr := (*error)(atomic.LoadPointer(&p.lastConnectErrPtr))
+	if errPtr == nil {
+		return nil
+	}
+	return *errPtr
+}
+
+func (p *Prosecutor) saveLastConnectError(err error) {
+	var errPtr *error
+	if err != nil {
+		errPtr = &err
+	}
+	atomic.StorePointer(&p.lastConnectErrPtr, unsafe.Pointer(errPtr))
+}
+
+func (p *Prosecutor) setDisconnectedState(err error) {
+	p.saveLastConnectError(err)
+
+	select {
+	case p.disconnectedRadarCh <- struct{}{}:
+	default:
+	}
+}
+
+func (p *Prosecutor) setConnectedState() {
+	p.saveLastConnectError(nil)
+
+	select {
+	case p.connectedRadarCh <- struct{}{}:
+	default:
+	}
+}
+
+func (p *Prosecutor) connected() bool {
+	return p.lastConnectError() == nil
 }
 
 func (p *Prosecutor) backgroundConnectRadar() {
@@ -278,35 +351,25 @@ func (p *Prosecutor) backgroundConnectRadar() {
 		}
 
 		for {
-
-			logrus.Infof("[prosecutor] --> try to connect radar[%s]", p.radarHost)
-
-			c := radar.NewRadarClient(p.radarHost, logrus.StandardLogger())
+			logrus.Infof("[prosecutor]      --> try to connect radar '%s:%s'", p.radarIp, p.radarPort)
 
 			// NOTE: block + timeout
+			c := radar.NewRadarClient(p.radarIp, p.radarPort, logrus.StandardLogger())
 			if err := c.Connect(); err != nil {
-				logrus.Warnf("[prosecutor] connect radar failed, reason: %v", err)
+				logrus.Warnf("[prosecutor]      <-- connect radar failed, %v", err)
 			} else {
-				logrus.Infof("[prosecutor] connect radar success")
+				logrus.Infof("[prosecutor]      <-- connect radar success")
 
-				// NOTE: 顺序不能变
+				// NOTE: do not change order of these two line
 				p.radarCli = c
-				p.connectedRadarCh <- struct{}{}
+				p.setConnectedState()
 
 				break
 			}
 
+			logrus.Infof("[prosecutor]      --- try again after %v", time.Second*time.Duration(p.reconnectPeriod))
 			time.Sleep(time.Second * time.Duration(p.reconnectPeriod))
 		}
-	}
-}
-
-func (p *Prosecutor) radarReconnectTrigger() {
-	select {
-	case p.disconnectedRadarCh <- struct{}{}:
-		logrus.Debugf("[prosecutor] trigger connection to [radar]")
-	default:
-		logrus.Debugf("[prosecutor] connection process is ongoing")
 	}
 }
 

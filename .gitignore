@@ -1,4 +1,5 @@
 prosecutor
+dms-prosecutor
 
 *.prof
 proto/*.pb.go

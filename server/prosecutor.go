@@ -2,20 +2,25 @@ package server
 
 import (
 	"time"
+	"unsafe"
 
 	"github.com/moooofly/dms-prosecutor/pkg/parser"
+	pb "github.com/moooofly/dms-prosecutor/proto"
+
 	"google.golang.org/grpc"
 
 	radar "github.com/moooofly/radar-go-client"
-
-	pb "github.com/moooofly/dms-prosecutor/proto"
 )
 
 // Prosecutor defines the prosecutor
 type Prosecutor struct {
-	radarHost  string // radar server tcp host
-	rsTcpHost  string // role service tcp host
-	rsUnixHost string // role service unix host
+	radarIp   string
+	radarPort string
+
+	rsIp   string
+	rsPort string
+
+	rsUnixHost string
 
 	checkPeriod     uint
 	reconnectPeriod uint
@@ -31,23 +36,28 @@ type Prosecutor struct {
 
 	radarCli *radar.RadarClient
 
-	disconnectedRadarCh   chan struct{}
-	disconnectedElectorCh chan struct{}
-
-	connectedRadarCh   chan struct{}
-	connectedElectorCh chan struct{}
-
 	stopCh chan struct{}
+
+	disconnectedRadarCh chan struct{}
+	connectedRadarCh    chan struct{}
+
+	disconnectedElectorCh chan struct{}
+	connectedElectorCh    chan struct{}
+
+	lastConnectErrPtr unsafe.Pointer
 }
 
 // NewProsecutor returns a prosecutor instance
 func NewProsecutor() *Prosecutor {
 
 	p := &Prosecutor{
-		radarHost: parser.ProsecutorSetting.RadarHost,
+		radarIp:   parser.ProsecutorSetting.RadarIp,
+		radarPort: parser.ProsecutorSetting.RadarPort,
 
-		rsTcpHost:  parser.ProsecutorSetting.ElectorRoleServiceTcpHost,
-		rsUnixHost: parser.ProsecutorSetting.ElectorRoleServiceUnixHost,
+		rsIp:   parser.ProsecutorSetting.ElectorRoleServiceIp,
+		rsPort: parser.ProsecutorSetting.ElectorRoleServicePort,
+
+		rsUnixHost: parser.ProsecutorSetting.ElectorRoleServiceUnixPath,
 
 		checkPeriod:     parser.ProsecutorSetting.CheckPeriod,
 		reconnectPeriod: parser.ProsecutorSetting.ReconnectPeriod,
@@ -96,7 +106,7 @@ func NewProsecutor() *Prosecutor {
 		p.watchAppStatusArgs[a] = true
 	}
 
-	p.disconnectedRadarCh = make(chan struct{}, 1)
+	p.disconnectedRadarCh = make(chan struct{}, 0)
 	p.disconnectedElectorCh = make(chan struct{}, 1)
 
 	p.connectedRadarCh = make(chan struct{}, 1)
