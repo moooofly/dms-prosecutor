@@ -1,0 +1,32 @@
+package: .
+import:
+- package: github.com/golang/protobuf
+  version: ^1.4.1
+  subpackages:
+  - proto
+- package: github.com/moooofly/dms-prosecutor
+  version: ^0.3.0
+  subpackages:
+  - pkg/parser
+  - pkg/servitization
+  - pkg/version
+  - proto
+  - server
+- package: github.com/moooofly/radar-go-client
+  version: ^0.2.0
+- package: github.com/sirupsen/logrus
+  version: ^1.6.0
+- package: google.golang.org/grpc
+  version: ^1.30.0-dev.1
+  subpackages:
+  - codes
+  - status
+- package: google.golang.org/protobuf
+  version: ^1.22.0
+  subpackages:
+  - reflect/protoreflect
+  - runtime/protoimpl
+- package: gopkg.in/alecthomas/kingpin.v2
+  version: ^2.2.6
+- package: gopkg.in/ini.v1
+  version: ^1.55.0
