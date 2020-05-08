@@ -1,3 +1,10 @@
+## 0.4.0 (2020-05-08)
+
+* feat: update golang to 1.13.10, change back to go module ([41d5fcd](https://github.com/moooofly/dms-prosecutor/commit/41d5fcd))
+* chore: rollback vendor management to glide for some reasons ([11b9de3](https://github.com/moooofly/dms-prosecutor/commit/11b9de3))
+
+
+
 ## 0.3.0 (2020-04-30)
 
 * feat: add glide vendor ([adb44d3](https://github.com/moooofly/dms-prosecutor/commit/adb44d3))
